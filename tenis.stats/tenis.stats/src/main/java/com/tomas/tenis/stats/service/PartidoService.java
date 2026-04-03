@@ -131,6 +131,7 @@ public class PartidoService {
         // --- LÓGICA DE ANÁLISIS DE JUEGOS ---
         String scoreLimpio = scoreNormalizado.trim();
         String[] sets = scoreLimpio.split("\\s+");
+        validarCantidadSets(partido, sets, scoreNormalizado);
 
         int setsJ1 = 0;
         int setsJ2 = 0;
@@ -164,6 +165,26 @@ public class PartidoService {
         } else {
             partido.setGanador(GANADOR_PENDIENTE);
             partido.setEstado(EstadoPartido.EN_CURSO);
+        }
+    }
+
+    private void validarCantidadSets(Partido partido, String[] sets, String scoreOriginal) {
+
+        String scoreUpper = scoreOriginal.toUpperCase();
+
+        // 🚨 SALTEAMOS VALIDACIÓN PARA CASOS ESPECIALES
+        if (scoreUpper.contains("RET") || scoreUpper.contains("DEF") || scoreUpper.contains("SUSP")) {
+            return;
+        }
+
+        boolean esGrandSlam = partido.getCategoria().getPuntos() >= 2000;
+
+        if (esGrandSlam && sets.length < 3) {
+            throw new IllegalArgumentException("Un Grand Slam debe tener al menos 3 sets (formato al mejor de 5)");
+        }
+
+        if (!esGrandSlam && sets.length > 3) {
+            throw new IllegalArgumentException("Un torneo ATP no puede tener más de 3 sets (formato al mejor de 3)");
         }
     }
 
