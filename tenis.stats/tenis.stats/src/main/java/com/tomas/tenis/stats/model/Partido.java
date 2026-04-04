@@ -11,7 +11,7 @@ import java.util.Objects;
 @Getter
 @Entity
 @Table(name = "partidos", uniqueConstraints = {
-        @UniqueConstraint(name = "uk_partido_unico", columnNames = {"fecha", "torneo", "fase"})
+        @UniqueConstraint(name = "uk_partido_unico", columnNames = {"fecha", "torneo", "fase", "jugador1_id", "jugador2_id"})
 })
 public class Partido {
 

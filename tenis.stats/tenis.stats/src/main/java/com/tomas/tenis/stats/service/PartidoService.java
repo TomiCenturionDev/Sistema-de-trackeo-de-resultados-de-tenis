@@ -35,47 +35,80 @@ public class PartidoService {
                                             Long jugador1Id, Long jugador2Id,
                                             String ciudadManual, FaseTorneo fase,
                                             String scoreInicial, String fechaJson,
-                                            EstadoPartido estadoJson
-                                            ) {
+                                            EstadoPartido estadoJson) {
 
-                                             Categoria cat = categoriaRepository.findById(categoriaId)
-                                                                                .orElseThrow(() -> new RuntimeException("Categoría no encontrada"));
-                                             Jugador j1 = jugadorRepository.findById(jugador1Id)
-                                                                           .orElseThrow(() -> new RuntimeException("Jugador 1 no encontrado"));
-                                             Jugador j2 = jugadorRepository.findById(jugador2Id)
-                                                                            .orElseThrow(() -> new RuntimeException("Jugador 2 no encontrado"));
-                                            String sedeFinal = determinarSede(codigoPais, ciudadManual);
+        Categoria cat = categoriaRepository.findById(categoriaId)
+                .orElseThrow(() -> new RuntimeException("Categoría no encontrada"));
 
-        // Parseamos la fecha que viene de Thunder Client / Postman
+        Jugador j1 = jugadorRepository.findById(jugador1Id)
+                .orElseThrow(() -> new RuntimeException("Jugador 1 no encontrado"));
+
+        Jugador j2 = jugadorRepository.findById(jugador2Id)
+                .orElseThrow(() -> new RuntimeException("Jugador 2 no encontrado"));
+
+        String sedeFinal = determinarSede(codigoPais, ciudadManual);
         LocalDate fechaFinal = (fechaJson != null) ? LocalDate.parse(fechaJson) : LocalDate.now();
 
-        //  Buscamos si ya existe este partido para evitar duplicar IDs (2, 3, 4...)
-        // Si existe, lo recuperamos para actualizarlo; si no, creamos uno nuevo.
-        Partido partido = partidoRepository.findByTorneoAndFechaAndFase(nombreTorneo, fechaFinal, fase)
-                .orElse(new Partido(fase));
+        // 🔥 NORMALIZACIÓN REAL (IDs + entidades)
+        Jugador jugadorA;
+        Jugador jugadorB;
+        Long jugadorAId;
+        Long jugadorBId;
+
+        if (jugador1Id < jugador2Id) {
+            jugadorA = j1;
+            jugadorB = j2;
+            jugadorAId = jugador1Id;
+            jugadorBId = jugador2Id;
+        } else {
+            jugadorA = j2;
+            jugadorB = j1;
+            jugadorAId = jugador2Id;
+            jugadorBId = jugador1Id;
+        }
+
+        // 🔥 VALIDACIÓN DE DUPLICADOS (consistente con persistencia)
+        boolean existe = partidoRepository
+                .findByTorneoAndFechaAndFaseAndJugador1IdAndJugador2Id(
+                        nombreTorneo,
+                        fechaFinal,
+                        fase,
+                        jugadorAId,
+                        jugadorBId
+                ).isPresent();
+
+        if (existe) {
+            throw new IllegalStateException("El partido ya existe para esos jugadores");
+        }
+
+        Partido partido = new Partido(fase);
 
         partido.setTorneo(nombreTorneo);
         partido.setCiudad(sedeFinal);
         partido.setPais(codigoPais);
         partido.setSuperficie(Superficie.valueOf(superficie.toUpperCase()));
         partido.setCategoria(cat);
-        partido.setJugador1(j1);
-        partido.setJugador2(j2);
-        partido.setFecha(fechaFinal); // <--- Atributo de fecha asignado
 
+        // 🔥 IMPORTANTE: persistimos NORMALIZADO
+        partido.setJugador1(jugadorA);
+        partido.setJugador2(jugadorB);
+
+        partido.setFecha(fechaFinal);
+
+        // 🔥 lógica de negocio
         procesarMarcadorYEstado(partido, scoreInicial);
 
-        if (estadoJson != null) {
+        if (estadoJson != null && partido.getEstado() == EstadoPartido.PROGRAMADO) {
             partido.setEstado(estadoJson);
         }
 
-        // Si el partido ya existía, Hibernate hará un UPDATE; si no, un INSERT.
         Partido partidoGuardado = partidoRepository.save(partido);
+
+        // 🔥 resiliente (no rompe flujo)
         sincronizarSalesforce(partidoGuardado);
 
         return partidoGuardado;
     }
-
     @Transactional
     public Partido actualizarResultado(Long id, String nuevoScore) {
         Partido partido = partidoRepository.findById(id)
@@ -103,44 +136,57 @@ public class PartidoService {
     // --- LÓGICA DE PROCESAMIENTO REESTABLECIDA ---
 
     private void procesarMarcadorYEstado(Partido partido, String score) {
+
         if (score == null || score.trim().isEmpty()) {
             partido.setResultado(SCORE_INICIAL);
             partido.setGanador(GANADOR_PENDIENTE);
             return;
         }
 
-        String scoreNormalizado = normalizarFormato(score);
-        String scoreUpper = scoreNormalizado.toUpperCase().trim();
-        partido.setResultado(scoreNormalizado);
+        String scoreUpperOriginal = score.toUpperCase();
 
-        // 🛡️ GESTIÓN DE CASOS ESPECIALES
-        if (scoreUpper.contains("RET") || scoreUpper.contains("DEF") || scoreUpper.contains("SUSP")) {
-            if (scoreUpper.contains("RET")) {
+        // 🔥 1. CASOS ESPECIALES
+        if (scoreUpperOriginal.contains("RET") || scoreUpperOriginal.contains("DEF") || scoreUpperOriginal.contains("SUSP")) {
+
+            partido.setResultado(score.trim());
+
+            if (scoreUpperOriginal.contains("RET")) {
                 partido.setEstado(EstadoPartido.RETIRO);
                 partido.setGanador(partido.getJugador1().getNombre());
-            } else if (scoreUpper.contains("DEF")) {
+            } else if (scoreUpperOriginal.contains("DEF")) {
                 partido.setEstado(EstadoPartido.DESCALIFICACION);
                 partido.setGanador(partido.getJugador1().getNombre());
-            } else if (scoreUpper.contains("SUSP")) {
+            } else if (scoreUpperOriginal.contains("SUSP")) {
                 partido.setEstado(EstadoPartido.SUSPENDIDO);
                 partido.setGanador(GANADOR_PENDIENTE);
             }
-            return; // 🚀 Cortamos la ejecución aquí para evitar el conteo de sets
+
+            return;
         }
 
-        // --- LÓGICA DE ANÁLISIS DE JUEGOS ---
-        String scoreLimpio = scoreNormalizado.trim();
-        String[] sets = scoreLimpio.split("\\s+");
+        // 🔥 2. NORMALIZACIÓN
+        String scoreNormalizado = normalizarFormato(score);
+        partido.setResultado(scoreNormalizado);
+
+        String[] sets = scoreNormalizado.trim().split("\\s+");
+
+        // 🔥 VALIDACIÓN DE FORMATO
+        for (String set : sets) {
+            if (!set.matches("\\d+-\\d+")) {
+                throw new IllegalArgumentException("Formato de set inválido: " + set);
+            }
+        }
+
         validarCantidadSets(partido, sets, scoreNormalizado);
 
         int setsJ1 = 0;
         int setsJ2 = 0;
 
         for (String set : sets) {
-            try {
-                String[] juegos = set.split("-");
-                if (juegos.length != 2) continue;
 
+            String[] juegos = set.split("-");
+
+            try {
                 int j1 = Integer.parseInt(juegos[0].trim());
                 int j2 = Integer.parseInt(juegos[1].trim());
 
@@ -149,8 +195,10 @@ public class PartidoService {
                 } else if ((j2 >= 6 && (j2 - j1 >= 2)) || (j2 == 7 && (j1 == 5 || j1 == 6))) {
                     setsJ2++;
                 }
+
             } catch (NumberFormatException e) {
-                System.err.println("Error procesando set: " + set);
+                // 🔥 ACÁ CAMBIA TODO
+                throw new IllegalArgumentException("Score inválido: " + set, e);
             }
         }
 
@@ -215,18 +263,19 @@ public class PartidoService {
         }
     }
 
-    private void sincronizarSalesforce(Partido p) {
-        // Solo sincronizamos si el partido tiene un estado final
-        if (p.getEstado() == EstadoPartido.FINALIZADO ||
-                p.getEstado() == EstadoPartido.RETIRO ||
-                p.getEstado() == EstadoPartido.DESCALIFICACION) {
+    private void sincronizarSalesforce(Partido partido) {
+        if (partido == null) return;
+
+        if (partido.getEstado() == EstadoPartido.FINALIZADO ||
+                partido.getEstado() == EstadoPartido.RETIRO ||
+                partido.getEstado() == EstadoPartido.DESCALIFICACION) {
+
             try {
-                salesforceService.enviarPartidoASalesforce(p);
-                System.out.println("✅ [SALESFORCE] Sincronización exitosa del partido ID: " + p.getId());
+                salesforceService.enviarPartidoASalesforce(partido);
+                System.out.println("✅ [SALESFORCE] Sincronización exitosa del partido ID: " + partido.getId());
             } catch (Exception e) {
-                // ❌ LOG DE REBOTE: Aquí verás por qué Salesforce rechazó el paquete
                 System.err.println("=========================================");
-                System.err.println("❌ [SALESFORCE] El envío REBOTÓ para el partido ID: " + p.getId());
+                System.err.println("❌ [SALESFORCE] El envío REBOTÓ para el partido ID: " + partido.getId());
                 System.err.println("MOTIVO: " + e.getMessage());
                 System.err.println("=========================================");
             }

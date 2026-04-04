@@ -10,6 +10,12 @@ import java.util.Optional;
 @Repository
 public interface PartidoRepository extends JpaRepository<Partido, Long> {
     // En PartidoRepository.java
-    Optional<Partido> findByTorneoAndFechaAndFase(String torneo, LocalDate fecha, FaseTorneo fase);
+    Optional<Partido> findByTorneoAndFechaAndFaseAndJugador1IdAndJugador2Id(
+            String torneo,
+            LocalDate fecha,
+            FaseTorneo fase,
+            Long jugador1Id,
+            Long jugador2Id
+    );
 }
 
