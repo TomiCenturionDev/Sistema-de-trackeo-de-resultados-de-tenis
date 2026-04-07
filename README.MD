@@ -1,30 +1,45 @@
 ## 🧩 Descripción del proyecto
+Este proyecto simula un sistema de integración backend donde la consistencia de datos no depende de sistemas externos.
 
-Este proyecto consiste en un sistema de integración backend diseñado para sincronizar datos entre una API externa y Salesforce, simulando un escenario real de arquitectura empresarial.
+La aplicación procesa resultados de partidos de tenis desde una API, aplica reglas de negocio y los sincroniza con Salesforce.
 
-El sistema consume resultados de partidos profesionales de tenis, los procesa aplicando reglas de negocio y los sincroniza con Salesforce, garantizando consistencia y calidad de la información.
-
-Para asegurar resiliencia ante fallos externos, se implementa una estrategia de persistencia intermedia: los datos se almacenan primero en una base local y luego se sincronizan con la nube, desacoplando el flujo principal de la disponibilidad de sistemas externos.
-
-💡 Este enfoque permite construir integraciones robustas, tolerantes a fallos y alineadas con prácticas reales de entornos productivos.
+💡 El resultado es un sistema desacoplado y tolerante a fallos, alineado con escenarios reales de integración.
 
 ## 💡 ¿Qué problemas resuelve?
 
-## ✅ Eliminación de datos duplicados
+> ❗ ¿Qué pasa cuando una integración falla?
 
-Se implementa el uso de External IDs como identificadores únicos. Esto permite:
-- Eliminación del 100% de duplicados en reintentos.
-- Recuperación automática ante fallos sin pérdida de datos.
-- Garantizar unicidad de resultados (Por ejemplo: finales de torneo por año).
-- Mantener integridad de datos entre sistemas.
+Para evitar pérdida de datos, se implementa una persistencia intermedia, almacenando primero la información en una base local y sincronizándola luego de forma controlada.
 
-## 🧹 Consistencia y limpieza de datos
+Esto permite:
 
-El sistema define reglas claras de validación y procesamiento, lo que permite:
+- Mantener consistencia ante fallos externos
+- Evitar duplicados mediante idempotencia
+- Reintentar sincronizaciones sin pérdida de información
 
-- Mantener un historial ordenado.
-- Facilitar consultas y auditorías futuras.
-- Reducir errores manuales.
+
+## 🔄 Flujos del sistema
+
+### ✅ Caso exitoso
+- Se recibe el partido desde la API
+- Se valida según reglas de negocio
+- Se persiste en base de datos
+- Se sincroniza con Salesforce
+- Estado final: `SYNCED`
+
+### ⚠️ Error reintentable (ej: falla de integración con Salesforce)
+- El partido se persiste correctamente
+- La sincronización falla
+- El registro queda en estado PENDING
+- Se reintenta la sincronización
+- No se pierde información
+
+### ❌ Error no reintentable (ej: datos inválidos)
+- Se detecta un error de negocio
+- No se sincroniza con Salesforce
+- Se registra el error
+- No se realizan reintentos
+
 
 ## 🔄 Tolerancia a fallos (resiliencia)
 
@@ -36,53 +51,47 @@ La arquitectura desacoplada permite que:
 
 ## 🏗️ Arquitectura del sistema
 
-- API externa de tenis → Backend (Spring Boot)
-- Backend → Persistencia en PostgreSQL
-- Backend → Integración con Salesforce (REST)
-- Backend → Enriquecimiento con servicio SOAP
+El sistema sigue un flujo desacoplado donde la persistencia local actúa como punto central:
 
-💡 **La arquitectura desacopla la persistencia local de las integraciones externas, permitiendo tolerancia a fallos y reintentos seguros.**
+```
+API externa
+     ↓
+Backend (Spring Boot)
+     ↓
+PostgreSQL
+   ↙     ↘
+Salesforce   Servicio SOAP
+  (REST)    (enriquecimiento)
+```
 
-- Entrada: API externa de resultados.
-- Procesamiento: Backend en Spring Boot.
-- Persistencia: Base de datos local (PostgreSQL).
-- Salida: Salesforce (REST API).
-- Enriquecimiento: Servicio externo vía SOAP.
+💡 La persistencia local desacopla el procesamiento de la disponibilidad de servicios externos, permitiendo tolerancia a fallos y reintentos seguros.
 
 
 ## 🛠️ Tecnologías utilizadas:
 
-- Java + Spring Boot
-  Motor principal del sistema, encargado de la lógica de negocio y procesamiento de datos.
-- PostgreSQL + Hibernate (JPA)
-  Persistencia local robusta y transaccional.
-- Salesforce API (REST)
-  Destino final donde los datos se convierten en registros utilizables a nivel empresarial.
-- SOAP (cliente generado desde WSDL)
-  Integración para enriquecimiento de datos externos.
-- OpenFeign
-  Cliente HTTP declarativo para integración con APIs externas.
-- Maven
-  Gestión de dependencias y build del proyecto.
-- Thunder Client / Postman
-  Testeo de endpoints.
-
+* **Java + Spring Boot**
+  Implementación de la lógica de negocio y orquestación del flujo de integración.
+* **PostgreSQL + Hibernate (JPA)**
+  Persistencia local utilizada como punto central para garantizar consistencia y tolerancia a fallos.
+* **Salesforce API (REST)**
+  Sistema externo donde se sincronizan los datos procesados.
+* **SOAP (cliente generado desde WSDL)**
+  Servicio utilizado para enriquecer los datos antes de su envío a Salesforce
+* **OpenFeign**
+  Cliente HTTP utilizado para consumir servicios externos de forma declarativa.
+* **Postman**
+  Pruebas manuales de endpoints y validación de flujos de integración
 
 ## 🔌 Integraciones
 
-## 🌐 REST (JSON)
+### 🌐 REST (Salesforce)
 
-Utilizado para la comunicación con Salesforce:
+Utilizado para la comunicación con Salesforce, permitiendo la sincronización de los datos procesados.
 
-- Ligero y eficiente.
-- Nativamente soportado por el CRM.
-- Ideal para operaciones CRUD de registros.
+### 🧾 SOAP (Enriquecimiento)
 
-## 🧾 SOAP (XML)
+El servicio SOAP recibe un código de país (ISO) y retorna la capital correspondiente, utilizada para enriquecer los datos antes de su sincronización.
 
-El servicio SOAP recibe un código de país (ISO) y retorna la capital correspondiente.
-
-Esta información se utiliza para enriquecer los datos antes de persistirlos en Salesforce.
 ### 📥 Ejemplo de request SOAP
 
 ```xml
@@ -90,40 +99,39 @@ Esta información se utiliza para enriquecer los datos antes de persistirlos en 
     <CountryCode>AR</CountryCode>
 </GetCapitalRequest>
 ```
-> El request es encapsulado automáticamente dentro de un SOAP Envelope por el cliente generado a partir del WSDL.
+> El cliente SOAP es generado a partir del WSDL, encapsulando automáticamente la estructura del request.
 
 ### 💡 Valor agregado:
 
-- Enriquecimiento automático de datos
-- Reducción de carga manual
-- Mejora en la calidad de la información almacenada en Salesforce
+- Enriquecimiento automático de datos antes de su persistencia
+- Mejora en la calidad de la información sincronizada
 
 ## 🚀 Highlights
 
-- Arquitectura resiliente con persistencia intermedia
-- Integración híbrida REST + SOAP
-- Prevención de duplicados con External IDs
-- Sincronización consistente entre sistemas desacoplados
-- Diseño preparado para fallos de servicios externos
+- Persistencia intermedia para evitar pérdida de datos
+- Manejo de errores con reintentos controlados
+- Prevención de duplicados mediante idempotencia
+- Integración con sistemas externos (REST + SOAP)
+- Consistencia entre sistemas desacoplados
 
 ## 🚧 Desafíos técnicos abordados:
 
 - **Prevención de duplicados en integraciones externas**
-  → Resuelto mediante uso de External IDs
+  → Resuelto mediante uso de External IDs para garantizar idempotencia
 
 - **Tolerancia a fallos en servicios externos (Salesforce)**
-  → Implementado mediante persistencia local intermedia
+  → Resuelto mediante persistencia local para evitar pérdida de datos
 
 - **Integración de SOAP en una arquitectura moderna REST**
-  → Adaptación mediante generación de clientes y procesamiento XML
+  → Integrado mediante cliente generado desde WSDL
 
 - **Consistencia entre sistemas desacoplados**
-  → Estrategia de sincronización controlada
+  → Implementado mediante sincronización desacoplada entre persistencia local y sistemas externos
 
 
-## ⚙️ Guía de Instalación y Testeo (Tech-Ready)
+## ⚙️ Guía de Instalación 
 
-Requisitos Previos:
+## Requisitos Previos:
 
 - Java 17 instalado.
 
@@ -150,13 +158,13 @@ Configurar en:
 
 ## ▶️ Ejecución
 
-# Windows
+### Windows
 ```
 - mvnw clean install
 - mvnw spring-boot:run
 ```
 
-# Linux / Mac
+### Linux / Mac
 
 ```
 ./mvnw clean install
@@ -185,6 +193,8 @@ Base URL: http://localhost:8080
 Permite registrar un partido, procesar su resultado y sincronizarlo con Salesforce.
 
 ## 🧪 Casos de prueba
+
+Estos ejemplos permiten probar distintos escenarios del sistema:
 
 ```
 Caso A: Grand Slam
@@ -225,111 +235,120 @@ Caso A: Grand Slam
 Caso B: Retiro para ATP
 
 {
-"id": 6,
-"fecha": "2024-05-15",
-"torneo": "Masters 1000 Roma",
-"pais": "IT",
-"ciudad": "Roma",
-"jugador1": {
-"id": 2,
-"nombre": "Carlos Alcaraz",
-"nacionalidad": "ES",
-"rankingActual": 2
-},
-"jugador2": {
-"id": 5,
-"nombre": "Novak Djokovic",
-"nacionalidad": "RS",
-"rankingActual": 3
-},
-"categoria": {
-"id": 2,
-"nombre": "Masters 1000",
-"puntos": 50,
-"tipoDeTorneo": "M1000"
-},
-"superficie": "ARCILLA",
-"fase": "R32",
-"estado": "RETIRO",
-"resultado": "6-3 1-0 RET",
-"ganador": "Carlos Alcaraz"
-}
+  "fecha": "2014-05-31",
+  "torneo": "Masters 1000 Roma",
+  "pais": "IT",
+  "ciudad": "Roma",
+  "jugador1": {
+    "id": 2,
+    "nombre": "Carlos Alcaraz",
+    "nacionalidad": "ES",
+    "rankingActual": 2
+  },
+  "jugador2": {
+    "id": 5,
+    "nombre": "Novak Djokovic",
+    "nacionalidad": "RS",
+    "rankingActual": 3
+  },
+  "categoria": {
+    "id": 4,
+    "nombre": "Masters 1000",
+    "puntos": 1000,
+    "tipoDeTorneo": "M1000"
+  },
+  "superficie": "ARCILLA",
+  "fase": "R32",
+  "estado": "FINALIZADO",
+  "resultado": "6-3 1-0 RET",
+  "ganador": "Carlos Alcaraz",
+  "jugadorRetirado": ""
+}}
 ```
 
 ```
 Caso C para partido común de ATP, pero con un Tie-break
 
 {
-"id": 7,
-"fecha": "2023-05-15",
-"torneo": "Masters 1000 Roma",
-"pais": "IT",
-"ciudad": "Roma",
-"jugador1": {
-"id": 3,
-"nombre": "Sebastián Báez",
-"nacionalidad": "AR",
-"rankingActual": 52
-},
-"jugador2": {
-"id": 4,
-"nombre": "Francisco Cerúndolo",
-"nacionalidad": "AR",
-"rankingActual": 19
-},
-"categoria": {
-"id": 2,
-"nombre": "Masters 1000",
-"puntos": 50,
-"tipoDeTorneo": "M1000"
-},
-"superficie": "ARCILLA",
-"fase": "R32",
-"estado": "FINALIZADO",
-"resultado": "6-4 7-6",
-"ganador": "Sebastián Báez"
+{
+  "fecha": "2014-05-31",
+  "torneo": "Masters 1000 Roma",
+  "pais": "IT",
+  "ciudad": "Roma",
+  "jugador1": {
+    "id": 2,
+    "nombre": "Carlos Alcaraz",
+    "nacionalidad": "ES",
+    "rankingActual": 2
+  },
+  "jugador2": {
+    "id": 5,
+    "nombre": "Novak Djokovic",
+    "nacionalidad": "RS",
+    "rankingActual": 3
+  },
+  "categoria": {
+    "id": 4,
+    "nombre": "Masters 1000",
+    "puntos": 1000,
+    "tipoDeTorneo": "M1000"
+  },
+  "superficie": "ARCILLA",
+  "fase": "F",
+  "estado": "FINALIZADO",
+  "resultado": "6-3 6-4",
+  "ganador": "Carlos Alcaraz",
+  "jugadorRetirado": ""
 }
 ```
 
-## 🧪 Estrategia de QA:
-Se definieron estratégicamente tres casos de prueba para abarcar distintas complejidades del dominio:
+## 🧪 Estrategia de QA
 
-- Un partido al mejor de 5 sets (Grand Slam).
-- Un escenario atípico de retiro ("RET") para validar las reglas de negocio en resultados incompletos.
-- Un partido estándar al mejor de 3 sets (ATP).
+Se definieron casos de prueba orientados a validar las reglas de negocio y el comportamiento del sistema ante distintos escenarios:
+
+- **Partido al mejor de 5 sets (Grand Slam)**  
+  → Validación de reglas específicas según tipo de torneo
+
+- **Partido con retiro ("RET")**  
+  → Manejo de resultados incompletos y determinación de ganador
+
+- **Partido estándar (ATP o Challenger, al mejor de 3 sets)**  
+  → Validación de flujo normal y procesamiento de resultados
 
 ## 🎯 Valor del proyecto
-Este sistema demuestra la capacidad de diseñar integraciones robustas en un contexto similar al de sistemas empresariales reales, asegurando:
 
-- Calidad de datos
-- Tolerancia a fallos
-- Consistencia entre sistemas
+Este proyecto demuestra la capacidad de diseñar integraciones donde la consistencia de datos no depende de sistemas externos.
 
+A través de persistencia intermedia, manejo de errores y sincronización controlada, el sistema permite:
 
-## 🎯 Enfoque
-Desarrollo backend orientado a integraciones, con foco en:
+- Evitar pérdida de datos ante fallos de integración
+- Mantener consistencia entre sistemas desacoplados
+- Prevenir duplicados mediante idempotencia
 
-- Calidad de datos.
-- Resiliencia ante fallos.
-- Consistencia entre sistemas desacoplados.
 
 ## 🔄 Enfoque de desarrollo
 
-El proyecto fue desarrollado de manera iterativa, simulando un flujo de trabajo ágil:
+El proyecto fue desarrollado de forma iterativa, priorizando la implementación y validación progresiva de las funcionalidades clave:
 
-- Implementación incremental de funcionalidades
-- Validación continua mediante pruebas manuales (Postman)
-- Ajustes progresivos a base de resultados y errores detectados
-- Priorización de integraciones críticas (Salesforce, persistencia)
+- Implementación incremental de reglas de negocio
+- Validación mediante pruebas manuales de los flujos de integración
+- Ajustes a partir de errores detectados durante el procesamiento
+- Enfoque en integraciones críticas (persistencia y sincronización con Salesforce)
 
-💡 Si bien se trata de un proyecto individual, se siguieron principios de desarrollo iterativo alineados a metodologías ágiles.
+## 💻 Sobre el proyecto
+Proyecto desarrollado de forma individual enfocado en resolver problemas reales de integración, priorizando consistencia de datos, manejo de errores y desacople entre sistemas.
 
-## 💻🧠 Sobre este proyecto
-Este proyecto fue desarrollado de forma individual con el objetivo de simular un entorno real de integración empresarial, aplicando buenas prácticas de diseño, resiliencia y calidad de datos en un contexto cercano a producción.
+## 🧠 Decisiones de diseño
+
+- Uso de persistencia intermedia para desacoplar el sistema de integraciones externas
+- Uso del patrón de diseño strategy para dividir distintos tipos de torneos
+- Manejo de estados (PENDING, SYNCED, FAILED) para controlar el flujo de sincronización
+- Idempotencia mediante identificadores únicos para evitar duplicados en reintentos
+- Persistencia de estados de sincronización para permitir reintentos controlados
 
 ## 🔮 Posibles mejoras
 
-- Implementación de colas (RabbitMQ/Kafka) para manejo de reintentos
-- Mayor cobertura de tests (unitarios e integración)
-- Normalización del resultado de partidos en una estructura de sets
-- Implementación de jobs batch para sincronización diferida
+- Mejorar el modelado de fases y rondas para evitar redundancia de datos
+- Ampliar cobertura de tests para validar reglas de negocio, idempotencia y manejo de errores
+- Mejorar el modelado del resultado de partidos en una estructura de sets
+- Implementar sincronización diferida mediante jobs programados 

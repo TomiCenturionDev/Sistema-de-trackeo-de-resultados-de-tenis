@@ -1,5 +1,6 @@
 package com.tomas.tenis.stats.exception;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -19,7 +20,6 @@ public class GlobalExceptionHandler {
         Map<String, Object> body = new HashMap<>();
         Map<String, String> erroresTecnicos = new HashMap<>();
 
-        // Extraemos qué campo falló y qué mensaje tiene
         ex.getBindingResult().getFieldErrors().forEach(error ->
                 erroresTecnicos.put(error.getField(), error.getDefaultMessage())
         );
@@ -32,18 +32,40 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(body, HttpStatus.BAD_REQUEST);
     }
 
-    // 2. Tu método de RuntimeException (Mejorado con timestamp)
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Object> handleRuntimeException(RuntimeException exception) {
+    // 2. Errores de datos inválidos (400)
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Object> handleBadRequest(IllegalArgumentException ex) {
         Map<String, Object> body = new HashMap<>();
         body.put("timestamp", LocalDateTime.now());
-        body.put("mensaje", exception.getMessage());
-        body.put("estado", "Error de Negocio");
+        body.put("mensaje", ex.getMessage());
+        body.put("estado", HttpStatus.BAD_REQUEST.value());
 
-        return new ResponseEntity<>(body, HttpStatus.NOT_FOUND);
+        return new ResponseEntity<>(body, HttpStatus.BAD_REQUEST);
     }
 
-    // 3. Catch-all: Para cualquier otro error inesperado (Evita el Whitelabel 500)
+    // 3. Conflictos de negocio / duplicados (409)
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<Object> handleConflict(IllegalStateException ex) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("timestamp", LocalDateTime.now());
+        body.put("mensaje", ex.getMessage());
+        body.put("estado", HttpStatus.CONFLICT.value());
+
+        return new ResponseEntity<>(body, HttpStatus.CONFLICT);
+    }
+
+    // 4. Conflictos de base de datos (idempotencia)
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Object> handleDataIntegrity(DataIntegrityViolationException ex) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("timestamp", LocalDateTime.now());
+        body.put("mensaje", "Conflicto de datos (posible duplicado)");
+        body.put("estado", HttpStatus.CONFLICT.value());
+
+        return new ResponseEntity<>(body, HttpStatus.CONFLICT);
+    }
+
+    // 5. Catch-all: Para cualquier otro error inesperado
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Object> handleGlobalException(Exception ex) {
         Map<String, Object> body = new HashMap<>();

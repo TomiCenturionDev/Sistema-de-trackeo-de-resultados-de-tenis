@@ -40,4 +40,6 @@ public class PartidoRequest {
 
     @NotNull(message = "Debes especificar la fase (R32, QF, SF, F, etc.)")
     private FaseTorneo fase;
+
+    private String jugadorRetirado;
 }

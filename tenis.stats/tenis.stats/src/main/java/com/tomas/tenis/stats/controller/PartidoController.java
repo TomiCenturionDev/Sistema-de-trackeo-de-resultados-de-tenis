@@ -16,6 +16,7 @@ import java.util.Map;
 public class PartidoController {
 
     private final PartidoService partidoService;
+    private String jugadorRetirado;
 
     public PartidoController(PartidoService partidoService) {
         this.partidoService = partidoService;
@@ -38,7 +39,8 @@ public class PartidoController {
                 request.getFase(),
                 request.getResultado(),
                 request.getFecha(),             // Pasamos la fecha del JSON
-                request.getEstado()          // Pasamos el estado del JSON
+                request.getEstado(),          // Pasamos el estado del JSON
+                request.getJugadorRetirado()
         );
 
         return new ResponseEntity<>(partido, HttpStatus.CREATED);

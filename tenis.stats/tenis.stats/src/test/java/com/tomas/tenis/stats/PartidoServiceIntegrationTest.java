@@ -9,8 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.transaction.annotation.Transactional;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 @Transactional
@@ -57,7 +56,9 @@ public class PartidoServiceIntegrationTest {
     public void deberiaGuardarPartidoRealEnDB() {
 
         Categoria cat = new Categoria();
+        cat.setNombre("Masters 1000");
         cat.setPuntos(1000);
+        cat.setTipoDeTorneo("ATP"); // 🔥 FIX CLAVE
         categoriaRepository.save(cat);
 
         Jugador j1 = new Jugador();
@@ -79,9 +80,78 @@ public class PartidoServiceIntegrationTest {
                 FaseTorneo.F,
                 "6-3 6-4",
                 "2024-05-15",
-                EstadoPartido.FINALIZADO
+                EstadoPartido.FINALIZADO,
+                null
+
         );
+
         assertNotNull(resultado.getId());
         assertEquals("Jugador 1", resultado.getGanador());
+    }
+
+    @Test
+    public void noDeberiaPermitirMasDeUnaFinalPorAnio() {
+
+        Categoria cat = new Categoria();
+        cat.setNombre("Masters 1000");
+        cat.setPuntos(1000);
+        cat.setTipoDeTorneo("ATP");
+        categoriaRepository.save(cat);
+
+        Jugador j1 = new Jugador();
+        j1.setNombre("Jugador 1");
+        jugadorRepository.save(j1);
+
+        Jugador j2 = new Jugador();
+        j2.setNombre("Jugador 2");
+        jugadorRepository.save(j2);
+
+        // Primera final (OK)
+        partidoService.registrarPartidoCompleto(
+                "Roma",
+                cat.getId(), // 🔥 FIX CLAVE
+                "IT",
+                "ARCILLA",
+                j1.getId(), // 🔥 también acá
+                j2.getId(),
+                "Roma",
+                FaseTorneo.F,
+                "6-3 6-4",
+                "2024-05-15",
+                EstadoPartido.FINALIZADO,
+                null
+        );
+
+        // Segunda final (debe fallar)
+        Exception exception = assertThrows(IllegalStateException.class, () -> {
+
+            Jugador j3 = new Jugador();
+            j3.setNombre("Jugador 3");
+            jugadorRepository.save(j3);
+
+            Jugador j4 = new Jugador();
+            j4.setNombre("Jugador 4");
+            jugadorRepository.save(j4);
+
+            partidoService.registrarPartidoCompleto(
+                    "Roma",
+                    cat.getId(), // 🔥 FIX
+                    "IT",
+                    "ARCILLA",
+                    j3.getId(), // 🔥 FIX
+                    j4.getId(),
+                    "Roma",
+                    FaseTorneo.F,
+                    "6-2 6-2",
+                    "2024-05-20",
+                    EstadoPartido.FINALIZADO,
+                    null
+            );
+        });
+
+        assertEquals(
+                "Se superó el límite de partidos para la fase F",
+                exception.getMessage()
+        );
     }
 }

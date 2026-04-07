@@ -61,6 +61,18 @@ public class Partido {
     @Column(nullable = false)
     private String ganador = "TBD";
 
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private SyncStatus syncStatus = SyncStatus.PENDING;
+
+    @Column(nullable = false)
+    private int retryCount = 0;
+
+    @Column(name = "external_id", unique = true)
+    private String externalId;
+
+    private String jugadorRetirado;
+
     // --- CONSTRUCTORES ---
 
     public Partido() {
@@ -70,5 +82,4 @@ public class Partido {
     public Partido(FaseTorneo fase) {
         this.fase = Objects.requireNonNull(fase, "La fase es obligatoria para crear un partido");
     }
-
 }

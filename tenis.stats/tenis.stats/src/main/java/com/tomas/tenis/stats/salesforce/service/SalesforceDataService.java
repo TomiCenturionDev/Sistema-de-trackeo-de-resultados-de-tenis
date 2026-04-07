@@ -15,10 +15,9 @@ public class SalesforceDataService {
     @Autowired
     private SalesforceAuthService authService;
 
-    public String enviarPartidoASalesforce(Partido partido) {
+    public String enviarPartidoASalesforce(Partido partido, String externalId) {
         Map<String, Object> data = new HashMap<>();
 
-        // 🎾 Mapeo de datos
         data.put("Name", "Partido: " + partido.getTorneo());
         data.put("Torneo__c", partido.getTorneo());
         data.put("Ciudad__c", partido.getCiudad());
@@ -29,34 +28,16 @@ public class SalesforceDataService {
         data.put("Jugador_1__c", partido.getJugador1().getNombre());
         data.put("Jugador_2__c", partido.getJugador2().getNombre());
         data.put("Resultado__c", partido.getResultado());
-        data.put("Ganador__c", partido.getGanador()); // <--- Sincroniza el ganador calculado
+        data.put("Ganador__c", partido.getGanador());
         data.put("Fecha__c", partido.getFecha().toString());
 
         if (partido.getCategoria() != null) {
             data.put("Puntos__c", partido.getCategoria().getPuntos());
         }
 
-        // --- 🛡️ LÓGICA DE SMART ID CORREGIDA ---
-        int anio = partido.getFecha().getYear();
-        String torneoLimpio = partido.getTorneo().replaceAll("\\s+", "").toUpperCase();
-        String paisLimpio = partido.getPais().replaceAll("\\s+", "").toUpperCase();
-        String fase = partido.getFase().name();
-        Integer puntos = (partido.getCategoria() != null) ? partido.getCategoria().getPuntos() : 0;
+        System.out.println("🔍 External ID recibido: " + externalId);
 
-        String smartId;
-
-        if (fase.equals("F")) {
-            smartId = torneoLimpio + "_" + paisLimpio + "_" + puntos + "_" + anio + "_" + fase;
-        } else {
-            // 🚀 CAMBIO CLAVE: Usamos los jugadores en el ID, no el ganador.
-            // Esto permite que si el ganador cambia de TBD a un nombre, el ID se mantenga y se actualice el registro.
-            String j1 = partido.getJugador1().getNombre().replaceAll("\\s+", "").toUpperCase();
-            String j2 = partido.getJugador2().getNombre().replaceAll("\\s+", "").toUpperCase();
-            smartId = torneoLimpio + "_" + paisLimpio + "_" + puntos + "_" + anio + "_" + fase + "_" + j1 + "_VS_" + j2;
-        }
-
-        System.out.println("🔍 Smart ID Generado: " + smartId);
-        return realizarUpsert("Partido__c", "Id_Local__c", smartId, data);
+        return realizarUpsert("Partido__c", "Id_Local__c", externalId, data);
     }
 
     public String realizarUpsert(String sObject, String externalIdField, String externalIdValue, Map<String, Object> data) {

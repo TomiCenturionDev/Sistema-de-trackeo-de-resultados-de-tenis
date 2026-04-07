@@ -3,9 +3,18 @@ package com.tomas.tenis.stats.service;
 import com.tomas.tenis.stats.model.*;
 import com.tomas.tenis.stats.repository.*;
 import com.tomas.tenis.stats.salesforce.service.SalesforceDataService;
-import com.tomas.tenis.stats.soap.CountryInfoService;
+import com.tomas.tenis.stats.soap.CountryInfoServiceSoapType;
+import com.tomas.tenis.stats.strategy.tournament.TournamentStrategy;
+import com.tomas.tenis.stats.strategy.tournament.factory.TournamentStrategyFactory;
+import com.tomas.tenis.stats.util.ExternalIdGenerator;
+import com.tomas.tenis.stats.util.RetryPolicy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 
 import java.time.LocalDate;
 import java.util.List;
@@ -17,16 +26,52 @@ public class PartidoService {
     private final CategoriaRepository categoriaRepository;
     private final JugadorRepository jugadorRepository;
     private final SalesforceDataService salesforceService;
+    private final CountryInfoServiceSoapType countryInfoService;
+    private final RetryPolicy retryPolicy;
+    private final ExternalIdGenerator externalIdGenerator;
+    @Autowired
+    private TournamentStrategyFactory strategyFactory;
 
     private static final String SCORE_INICIAL = "0-0";
     private static final String GANADOR_PENDIENTE = "TBD";
 
+    private static final Logger log = LoggerFactory.getLogger(PartidoService.class);
+
     public PartidoService(PartidoRepository partidoRepository, CategoriaRepository categoriaRepository,
-                          JugadorRepository jugadorRepository, SalesforceDataService salesforceService){
+                          JugadorRepository jugadorRepository, SalesforceDataService salesforceService,
+                          CountryInfoServiceSoapType countryInfoService, RetryPolicy retryPolicy,
+                          ExternalIdGenerator externalIdGenerator, TournamentStrategyFactory strategyFactory){
         this.partidoRepository = partidoRepository;
         this.categoriaRepository = categoriaRepository;
         this.jugadorRepository= jugadorRepository;
         this.salesforceService= salesforceService;
+        this.countryInfoService= countryInfoService;
+        this.retryPolicy = retryPolicy;
+        this.externalIdGenerator= externalIdGenerator;
+        this.strategyFactory = strategyFactory;
+    }
+
+    private void validarCantidadPorFase(String torneo, int year, FaseTorneo fase) {
+
+        int limite = obtenerLimitePorFase(fase);
+
+        long cantidad = partidoRepository.countByTorneoAndYearAndFase(torneo, year, fase);
+
+        if (cantidad >= limite) {
+            throw new IllegalStateException(
+                    "Se superó el límite de partidos para la fase " + fase
+            );
+        }
+    }
+
+    private int obtenerLimitePorFase(FaseTorneo fase) {
+        return switch (fase) {
+            case F -> 1;
+            // FUTURO; Para hacerlo más escalable con fases anteriores a la final
+            // case SF -> 2;
+            // case QF -> 4;
+            default -> Integer.MAX_VALUE;
+        };
     }
 
     @Transactional
@@ -35,7 +80,7 @@ public class PartidoService {
                                             Long jugador1Id, Long jugador2Id,
                                             String ciudadManual, FaseTorneo fase,
                                             String scoreInicial, String fechaJson,
-                                            EstadoPartido estadoJson) {
+                                            EstadoPartido estadoJson, String jugadorRetirado) {
 
         Categoria cat = categoriaRepository.findById(categoriaId)
                 .orElseThrow(() -> new RuntimeException("Categoría no encontrada"));
@@ -49,7 +94,11 @@ public class PartidoService {
         String sedeFinal = determinarSede(codigoPais, ciudadManual);
         LocalDate fechaFinal = (fechaJson != null) ? LocalDate.parse(fechaJson) : LocalDate.now();
 
-        // 🔥 NORMALIZACIÓN REAL (IDs + entidades)
+        int year = fechaFinal.getYear();
+        validarCantidadPorFase(nombreTorneo, year, fase);
+
+
+
         Jugador jugadorA;
         Jugador jugadorB;
         Long jugadorAId;
@@ -67,7 +116,9 @@ public class PartidoService {
             jugadorBId = jugador1Id;
         }
 
-        // 🔥 VALIDACIÓN DE DUPLICADOS (consistente con persistencia)
+        log.info("Registrando partido torneo={} jugadores={} vs {} fecha={}",
+                nombreTorneo, jugadorAId, jugadorBId, fechaFinal);
+
         boolean existe = partidoRepository
                 .findByTorneoAndFechaAndFaseAndJugador1IdAndJugador2Id(
                         nombreTorneo,
@@ -88,27 +139,33 @@ public class PartidoService {
         partido.setPais(codigoPais);
         partido.setSuperficie(Superficie.valueOf(superficie.toUpperCase()));
         partido.setCategoria(cat);
-
-        // 🔥 IMPORTANTE: persistimos NORMALIZADO
         partido.setJugador1(jugadorA);
         partido.setJugador2(jugadorB);
-
         partido.setFecha(fechaFinal);
+        partido.setJugadorRetirado(jugadorRetirado);
 
-        // 🔥 lógica de negocio
         procesarMarcadorYEstado(partido, scoreInicial);
 
         if (estadoJson != null && partido.getEstado() == EstadoPartido.PROGRAMADO) {
             partido.setEstado(estadoJson);
         }
 
-        Partido partidoGuardado = partidoRepository.save(partido);
+        try {
+            Partido partidoGuardado = partidoRepository.save(partido);
+            partidoRepository.flush();
+            sincronizarSalesforce(partidoGuardado);
 
-        // 🔥 resiliente (no rompe flujo)
-        sincronizarSalesforce(partidoGuardado);
+            return partidoGuardado;
 
-        return partidoGuardado;
+        } catch (DataIntegrityViolationException error) {
+
+            log.warn("Intento duplicado de partido torneo={} fecha={} jugadores={} vs {}",
+                    nombreTorneo, fechaFinal, jugadorAId, jugadorBId);
+
+            throw new IllegalStateException("El partido ya existe (idempotencia DB)", error);
+        }
     }
+
     @Transactional
     public Partido actualizarResultado(Long id, String nuevoScore) {
         Partido partido = partidoRepository.findById(id)
@@ -133,8 +190,6 @@ public class PartidoService {
         partidoRepository.deleteById(id);
     }
 
-    // --- LÓGICA DE PROCESAMIENTO REESTABLECIDA ---
-
     private void procesarMarcadorYEstado(Partido partido, String score) {
 
         if (score == null || score.trim().isEmpty()) {
@@ -143,19 +198,25 @@ public class PartidoService {
             return;
         }
 
+        TournamentStrategy strategy = strategyFactory.getStrategy(partido);
+
         String scoreUpperOriginal = score.toUpperCase();
 
-        // 🔥 1. CASOS ESPECIALES
-        if (scoreUpperOriginal.contains("RET") || scoreUpperOriginal.contains("DEF") || scoreUpperOriginal.contains("SUSP")) {
+        // 🔥 CASOS BORDE → ahora usan Strategy
+        if (scoreUpperOriginal.contains("RET") ||
+                scoreUpperOriginal.contains("DEF") ||
+                scoreUpperOriginal.contains("SUSP")) {
 
             partido.setResultado(score.trim());
 
             if (scoreUpperOriginal.contains("RET")) {
                 partido.setEstado(EstadoPartido.RETIRO);
-                partido.setGanador(partido.getJugador1().getNombre());
+                partido.setGanador(strategy.determinarGanadorEspecial(partido));
+
             } else if (scoreUpperOriginal.contains("DEF")) {
                 partido.setEstado(EstadoPartido.DESCALIFICACION);
-                partido.setGanador(partido.getJugador1().getNombre());
+                partido.setGanador(strategy.determinarGanadorEspecial(partido));
+
             } else if (scoreUpperOriginal.contains("SUSP")) {
                 partido.setEstado(EstadoPartido.SUSPENDIDO);
                 partido.setGanador(GANADOR_PENDIENTE);
@@ -164,83 +225,35 @@ public class PartidoService {
             return;
         }
 
-        // 🔥 2. NORMALIZACIÓN
         String scoreNormalizado = normalizarFormato(score);
         partido.setResultado(scoreNormalizado);
 
         String[] sets = scoreNormalizado.trim().split("\\s+");
 
-        // 🔥 VALIDACIÓN DE FORMATO
         for (String set : sets) {
             if (!set.matches("\\d+-\\d+")) {
                 throw new IllegalArgumentException("Formato de set inválido: " + set);
             }
         }
 
-        validarCantidadSets(partido, sets, scoreNormalizado);
+        strategy.validarCantidadSets(partido, sets);
 
-        int setsJ1 = 0;
-        int setsJ2 = 0;
+        String ganador = strategy.determinarGanador(partido, sets);
 
-        for (String set : sets) {
-
-            String[] juegos = set.split("-");
-
-            try {
-                int j1 = Integer.parseInt(juegos[0].trim());
-                int j2 = Integer.parseInt(juegos[1].trim());
-
-                if ((j1 >= 6 && (j1 - j2 >= 2)) || (j1 == 7 && (j2 == 5 || j2 == 6))) {
-                    setsJ1++;
-                } else if ((j2 >= 6 && (j2 - j1 >= 2)) || (j2 == 7 && (j1 == 5 || j1 == 6))) {
-                    setsJ2++;
-                }
-
-            } catch (NumberFormatException e) {
-                // 🔥 ACÁ CAMBIA TODO
-                throw new IllegalArgumentException("Score inválido: " + set, e);
-            }
-        }
-
-        int setsNecesarios = (partido.getCategoria().getPuntos() >= 2000) ? 3 : 2;
-
-        if (setsJ1 == setsNecesarios) {
-            partido.setGanador(partido.getJugador1().getNombre());
-            partido.setEstado(EstadoPartido.FINALIZADO);
-        } else if (setsJ2 == setsNecesarios) {
-            partido.setGanador(partido.getJugador2().getNombre());
-            partido.setEstado(EstadoPartido.FINALIZADO);
-        } else {
+        if (ganador.equals(GANADOR_PENDIENTE)) {
             partido.setGanador(GANADOR_PENDIENTE);
             partido.setEstado(EstadoPartido.EN_CURSO);
-        }
-    }
-
-    private void validarCantidadSets(Partido partido, String[] sets, String scoreOriginal) {
-
-        String scoreUpper = scoreOriginal.toUpperCase();
-
-        // 🚨 SALTEAMOS VALIDACIÓN PARA CASOS ESPECIALES
-        if (scoreUpper.contains("RET") || scoreUpper.contains("DEF") || scoreUpper.contains("SUSP")) {
             return;
         }
 
-        boolean esGrandSlam = partido.getCategoria().getPuntos() >= 2000;
-
-        if (esGrandSlam && sets.length < 3) {
-            throw new IllegalArgumentException("Un Grand Slam debe tener al menos 3 sets (formato al mejor de 5)");
-        }
-
-        if (!esGrandSlam && sets.length > 3) {
-            throw new IllegalArgumentException("Un torneo ATP no puede tener más de 3 sets (formato al mejor de 3)");
-        }
+        partido.setGanador(ganador);
+        partido.setEstado(EstadoPartido.FINALIZADO);
     }
 
-    // Metodo auxiliar para que el parser entienda los espacios como guiones entre juegos
+
     private String normalizarFormato(String score) {
         if (score == null || score.trim().isEmpty()) return SCORE_INICIAL;
 
-        // 1. Quitamos todos los guiones y espacios extra para tener solo números
         String soloNumeros = score.replaceAll("[^0-9]", " ").trim().replaceAll("\\s+", " ");
         String[] partes = soloNumeros.split(" ");
 
@@ -251,13 +264,13 @@ public class PartidoService {
                 sb.append((i % 2 == 0) ? "-" : " ");
             }
         }
-        return sb.toString(); // Devolverá por ejemplo: "6-4 7-6"
+        return sb.toString();
     }
 
     private String determinarSede(String pais, String ciudad) {
         if (ciudad != null && !ciudad.isEmpty()) return ciudad;
         try {
-            return new CountryInfoService().getCountryInfoServiceSoap().capitalCity(pais);
+            return countryInfoService.capitalCity(pais);
         } catch (Exception e) {
             return "Sede no definida";
         }
@@ -266,19 +279,61 @@ public class PartidoService {
     private void sincronizarSalesforce(Partido partido) {
         if (partido == null) return;
 
+        // 🔥 1. Idempotencia a nivel aplicación
+        if (partido.getSyncStatus() == SyncStatus.SUCCESS) {
+            log.info("Partido ya sincronizado, evitando duplicado partidoId={}", partido.getId());
+            return;
+        }
+
+        // 🔥 2. Generar externalId SIEMPRE antes del sync
+        if (partido.getExternalId() == null) {
+            partido.setExternalId(externalIdGenerator.generarExternalId(partido));
+
+            // 🔥 IMPORTANTE: persistirlo inmediatamente
+            partidoRepository.save(partido);
+        }
+
         if (partido.getEstado() == EstadoPartido.FINALIZADO ||
                 partido.getEstado() == EstadoPartido.RETIRO ||
                 partido.getEstado() == EstadoPartido.DESCALIFICACION) {
 
+            log.info("Iniciando sync partidoId={} estado={} externalId={}",
+                    partido.getId(),
+                    partido.getEstado(),
+                    partido.getExternalId());
+
             try {
-                salesforceService.enviarPartidoASalesforce(partido);
-                System.out.println("✅ [SALESFORCE] Sincronización exitosa del partido ID: " + partido.getId());
+                salesforceService.enviarPartidoASalesforce(partido, partido.getExternalId());
+
+                partido.setSyncStatus(SyncStatus.SUCCESS);
+
+                log.info("Sync OK partidoId={} status={}",
+                        partido.getId(),
+                        partido.getSyncStatus());
+
             } catch (Exception e) {
-                System.err.println("=========================================");
-                System.err.println("❌ [SALESFORCE] El envío REBOTÓ para el partido ID: " + partido.getId());
-                System.err.println("MOTIVO: " + e.getMessage());
-                System.err.println("=========================================");
+
+                if (retryPolicy.esErrorReintentable(e)) {
+
+                    partido.setSyncStatus(SyncStatus.FAILED);
+                    partido.setRetryCount(partido.getRetryCount() + 1);
+
+                    log.warn("Error REINTENTABLE sync partidoId={} retryCount={}",
+                            partido.getId(),
+                            partido.getRetryCount(),
+                            e);
+
+                } else {
+
+                    partido.setSyncStatus(SyncStatus.FAILED_FINAL);
+
+                    log.error("Error NO REINTENTABLE. No se reintentará. partidoId={}",
+                            partido.getId(),
+                            e);
+                }
             }
+
+            partidoRepository.save(partido);
         }
     }
 }
