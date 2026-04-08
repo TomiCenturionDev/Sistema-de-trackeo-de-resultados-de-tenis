@@ -200,7 +200,6 @@ Estos ejemplos permiten probar distintos escenarios del sistema:
 Caso A: Grand Slam
 
 {
-"id": 5,
 "fecha": "2024-06-09",
 "torneo": "Roland Garros",
 "pais": "FR",
@@ -263,13 +262,12 @@ Caso B: Retiro para ATP
   "resultado": "6-3 1-0 RET",
   "ganador": "Carlos Alcaraz",
   "jugadorRetirado": ""
-}}
+}
 ```
 
 ```
 Caso C para partido común de ATP, pero con un Tie-break
 
-{
 {
   "fecha": "2014-05-31",
   "torneo": "Masters 1000 Roma",
